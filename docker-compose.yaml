@@ -1,0 +1,107 @@
+name: open-webui-amd-gpu
+services:
+  ollama:
+    container_name: ollama-rocm
+    deploy:
+      resources:
+        limits:
+          memory: "53687091200"
+    devices:
+      - source: /dev/kfd
+        target: /dev/kfd
+        permissions: rwm
+      - source: /dev/dri
+        target: /dev/dri
+        permissions: rwm
+    entrypoint:
+      - sh
+      - -c
+      - |
+        # 启动 ollama 服务（可选，如果不需要可以注释掉）
+        # ollama serve &
+        
+        # 启动 llama-server（推荐）
+        export HSA_USE_SVM=0
+        export HSA_ENABLE_SDMA=0
+        export HSA_XNACK=1
+        export OCL_SET_SVM_SIZE=262144
+        export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu
+        export ROCBLAS_TENSILE_LIB_PATH=/opt/rocblas/library
+        
+        mkdir -p /tmp/cache
+        nohup /usr/local/bin/llama-server \
+          -m /root/.ollama/qwen3.6-35b-a3b-q4_k_m.gguf \
+          --host 0.0.0.0 \
+          --port 8080 \
+          -ngl 999 \
+          -fa 1 \
+          -c 262144 \
+          --parallel 1 \
+          --slot-save-path /tmp/cache \
+          > /tmp/llama.log 2>&1 &
+        
+        # 保持容器运行
+        tail -f /dev/null
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      no_proxy: localhost,127.0.0.1
+      OLLAMA_GPU_OVERHEAD: "0"
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: "q4_0"
+      HSA_XNACK: "1"
+      HSA_OVERRIDE_GFX_VERSION: "11.5.1"
+      HSA_USE_SVM: "0"
+      HSA_ENABLE_SDMA: "0"
+      OCL_SET_SVM_SIZE: "262144"
+    image: ollama/ollama:rocm
+    networks:
+      default: null
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - mode: ingress
+        target: 11434
+        published: "11434"
+        protocol: tcp
+      - mode: ingress
+        target: 8080
+        published: "8080"
+        protocol: tcp
+    shm_size: "8589934592"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - type: bind
+        source: /home/spoto/main/syspool/Compose/open-webui-amd-gpu/ollama
+        target: /root/.ollama
+        bind: {}
+
+  openwebui:
+    container_name: openwebui
+    depends_on:
+      ollama:
+        condition: service_started
+        required: true
+    environment:
+      DEFAULT_MODELS: qwen3.6:35b
+      OLLAMA_BASE_URL: http://ollama-rocm:11434
+    image: m.daocloud.io/ghcr.io/open-webui/open-webui:main
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 8080
+        published: "53000"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /home/spoto/main/syspool/Compose/open-webui-amd-gpu/open-webui
+        target: /app/backend/data
+        bind: {}
+
+networks:
+  default:
+    name: open-webui-amd-gpu_default
