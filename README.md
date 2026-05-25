@@ -161,6 +161,21 @@ curl -s http://192.168.0.206:8080/v1/chat/completions \
 - 模型: Qwen3.6-35B-A3B Q4_K_M (21GB)
 - 环境变量: HSA_USE_SVM=0, HSA_ENABLE_SDMA=0, HSA_XNACK=1
 - 缓存配置: `--slot-save-path /tmp/slot_cache`
+- **默认 KV cache: FP16 (不是 Q4)**
+
+### KV Cache 量化对比 (256K 上下文)
+
+| KV Cache 类型 | 初始 GTT | 256K 请求后 GTT | GTT 增加 | VmHWM |
+|--------------|---------|----------------|---------|-------|
+| **FP16 (默认)** | 27.4 GB | 27.5 GB | +0.1 GB | 20.9 GB |
+| **Q8_0** | 24.9 GB | 26.7 GB | +1.8 GB | 20.9 GB |
+| **Q4_0** | 23.6 GB | 25.4 GB | +1.8 GB | 20.9 GB |
+
+**关键发现：**
+- 默认 KV cache 是 **FP16**，不是 Q4
+- VmHWM 始终是 20.9GB（模型权重通过 mmap 加载）
+- GTT 增加量反映 KV cache 实际分配
+- 当前模型无法达到 32GB+ 物理内存占用（模型仅 21GB）
 
 ### 单轮性能（不同上下文长度）
 
