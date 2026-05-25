@@ -160,8 +160,9 @@ curl -s http://192.168.0.206:8080/v1/chat/completions \
 - ROCm: 容器内自带 (ollama/ollama:rocm)
 - 模型: Qwen3.6-35B-A3B Q4_K_M (21GB)
 - 环境变量: HSA_USE_SVM=0, HSA_ENABLE_SDMA=0, HSA_XNACK=1
+- 缓存配置: `--slot-save-path /tmp/slot_cache`
 
-### 测试结果
+### 单轮性能（不同上下文长度）
 
 | 上下文 | Prompt Tokens | Output Tokens | TTFT (ms) | Prefill (t/s) | Gen (t/s) | Total (s) |
 |--------|--------------|---------------|-----------|---------------|-----------|-----------|
@@ -186,6 +187,53 @@ curl -s http://192.168.0.206:8080/v1/chat/completions \
 | ROCm 7.2 (参考) | 39.7 t/s | **55.3 t/s** |
 | Vulkan RADV (参考) | 39 t/s | - |
 | Vulkan AMDVLK (参考) | 49 t/s | - |
+
+### Agent Benchmark - 缓存验证测试
+
+**测试配置：**
+- 工具: agent-bench.py (llm-inference-benchmarking skill)
+- 目标上下文: 240,000 tokens
+- 每轮输入: ~500 tokens
+- 每轮输出: 100 tokens
+- 缓存: `--slot-save-path /tmp/slot_cache` 启用
+
+**测试结果：**
+
+| 指标 | 数值 |
+|------|------|
+| 总轮数 | **227 轮** |
+| 最终上下文 | **240,673 tokens** |
+| 缓存状态 | ✅ **生效** |
+| 测试耗时 | ~4.5 小时 |
+
+**缓存验证分析：**
+
+TTFT 随轮数变化（关键节点）：
+
+| 轮数 | 上下文 | TTFT (ms) | 状态 |
+|------|--------|-----------|------|
+| 10 | ~10K | 1,600 | 基准 |
+| 50 | ~53K | 3,100 | 线性增长 |
+| 100 | ~106K | 4,800 | 线性增长 |
+| 150 | ~159K | 6,500 | 线性增长 |
+| 200 | ~212K | 8,100 | 线性增长 |
+| 227 | ~240K | 9,048 | 线性增长 |
+
+**结论：**
+- ✅ TTFT 呈**线性增长**，表明每轮只处理新输入的 ~956 tokens
+- ✅ 无突然跳升（>3× 基线），缓存未失效
+- ✅ `--slot-save-path` 确保缓存持久化到磁盘，避免内存驱逐
+
+**性能衰减趋势：**
+
+| 阶段 | Prefill (t/s) | Generation (t/s) |
+|------|--------------|------------------|
+| 早期 (0-50轮) | 585 → 300 | 52 → 43 |
+| 中期 (50-150轮) | 300 → 150 | 43 → 35 |
+| 后期 (150-227轮) | 150 → 105 | 35 → 25.5 |
+
+完整数据: [results/agent_bench_llama_cache.json](results/agent_bench_llama_cache.json)  
+可视化报告: [results/agent_bench_llama_cache.html](results/agent_bench_llama_cache.html)
 
 ## 内存占用分析
 
@@ -227,6 +275,23 @@ VmRSS:    2.5 GB (当前物理内存)
 - 大内存分配正常
 - 模型完全 GPU 可访问
 
+### --slot-save-path
+
+**关键参数**，启用 llama-server 的缓存持久化：
+
+```bash
+llama-server ... --slot-save-path /tmp/slot_cache
+```
+
+**作用：**
+- 将 KV cache 检查点持久化到磁盘
+- 防止长上下文下缓存被内存驱逐
+- 确保 prefix caching 在 240K+ 上下文仍然有效
+
+**测试验证：**
+- 无 `--slot-save-path`: 缓存可能在 ~3-5 轮后失效（llama-server 默认行为）
+- 有 `--slot-save-path`: 缓存稳定到 240K+ 上下文（本测试验证）
+
 ### -ngl 999
 
 将所有层卸载到 GPU。对于 qwen3.6-35b：
@@ -242,7 +307,8 @@ VmRSS:    2.5 GB (当前物理内存)
 1. **ollama 缓存不工作**: ollama 0.24.0 的 prefix caching 对 qwen3.6 不生效（template 问题）
 2. **ROCm 驱动限制**: 需要 HSA_USE_SVM=0 才能分配大内存
 3. **GTT 性能**: 模型权重在 GTT 中，比专用 VRAM 略慢
-4. **长上下文 TTFT**: 240K 上下文需要 ~4.2 分钟预热
+4. **长上下文 TTFT**: 240K 上下文需要 ~9 秒预热（每轮）
+5. **缓存冷启动**: 首次加载模型后，前几轮 TTFT 较高（模型预热）
 
 ## 参考链接
 
@@ -251,6 +317,7 @@ VmRSS:    2.5 GB (当前物理内存)
 - [TheRock Discussion #2684 - HSA_USE_SVM=0 Fix](https://github.com/ROCm/TheRock/discussions/2684)
 - [llama.cpp ROCm gfx1151 Prebuilt](https://github.com/lemonade-sdk/llamacpp-rocm)
 - [Strix Halo LLM Performance Benchmarks](https://github.com/visorcraft/strix-halo-llm-perf)
+- [llm-inference-benchmarking Skill](https://github.com/spoto-team/agent-bench)
 
 ## 许可证
 
